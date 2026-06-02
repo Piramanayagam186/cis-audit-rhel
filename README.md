@@ -144,12 +144,6 @@ This tool is intended to assist with CIS Benchmark compliance assessments and is
 
 ---
 
-## 📜 License
-
-This project is released under the [MIT License](LICENSE).
-
----
-
 ## 🤝 Contributing
 
 Pull requests are welcome. If you add checks for additional CIS controls or other distros (Debian/Ubuntu), please include the CIS reference number and a brief comment explaining the check.
