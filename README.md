@@ -1,4 +1,4 @@
-# 🔒 CIS Benchmark Hardening Audit Script
+# 🔒 Center for Internet Security (CIS) Benchmark Hardening Audit Script
 
 A lightweight, dependency-free Bash script that audits **RHEL / CentOS / Rocky Linux / AlmaLinux** systems against **CIS Benchmark Level 1** controls. It produces a colour-coded console report with actionable remediation hints and a final compliance score, and saves the full output to `/var/log/`.
 
