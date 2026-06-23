@@ -153,7 +153,7 @@ else
     # WHY: SSHv1 has known cryptographic weaknesses (BEAST, etc.)
     # Protocol directive is implicit on modern OpenSSH, but explicit is safer.
     if grep -qiP '^\s*Protocol\s+2' "$SSHD_CONFIG" || \
-       ssh -V 2>&1 | grep -q 'OpenSSH_[89]'; then
+       ssh -V 2>&1 | grep -qP 'OpenSSH_[7-9]'; then
         check_result "SSH Protocol 2 only (CIS 5.2.4)" "pass"
     else
         check_result "SSH Protocol 2 only (CIS 5.2.4)" "warn" \
@@ -196,21 +196,26 @@ else
 
     # CIS 5.2.13 ▸ LoginGraceTime <= 60 seconds
     grace=$(grep -iP '^\s*LoginGraceTime\s+\d+' "$SSHD_CONFIG" | awk '{print $2}')
-    if [[ -n "$grace" && "$grace" -le 60 ]]; then
+    # NOTE: LoginGraceTime 0 disables the timeout entirely (infinite grace period).
+    # A value of 0 must be treated as a FAIL, not a PASS.
+    if [[ -n "$grace" && "$grace" -gt 0 && "$grace" -le 60 ]]; then
         check_result "LoginGraceTime <= 60s (CIS 5.2.13) [current: ${grace}s]" "pass"
     else
         check_result "LoginGraceTime <= 60s (CIS 5.2.13) [current: ${grace:-not set}]" "fail" \
-            "Set: LoginGraceTime 60"
+            "Set: LoginGraceTime 60  (0 disables timeout — avoid it)"
     fi
 
     # CIS 5.2.14 ▸ Idle session timeout via ClientAliveInterval
     interval=$(grep -iP '^\s*ClientAliveInterval\s+\d+' "$SSHD_CONFIG" | awk '{print $2}')
     maxcount=$(grep -iP '^\s*ClientAliveCountMax\s+\d+' "$SSHD_CONFIG" | awk '{print $2}')
-    if [[ -n "$interval" && "$interval" -le 300 && -n "$maxcount" && "$maxcount" -le 3 ]]; then
+    # NOTE: ClientAliveInterval 0 disables keepalive probes entirely — idle sessions
+    # never time out. Require interval > 0 to ensure the timeout is actually active.
+    if [[ -n "$interval" && "$interval" -gt 0 && "$interval" -le 300 && \
+          -n "$maxcount" && "$maxcount" -le 3 ]]; then
         check_result "SSH idle timeout configured (CIS 5.2.14)" "pass"
     else
         check_result "SSH idle timeout configured (CIS 5.2.14)" "fail" \
-            "Set: ClientAliveInterval 300  and  ClientAliveCountMax 3"
+            "Set: ClientAliveInterval 300  and  ClientAliveCountMax 3  (0 disables probes)"
     fi
 fi
 
@@ -383,9 +388,9 @@ RISKY_SERVICES=(
     "avahi-daemon|CIS 2.2.15|mDNS; usually not needed on servers"
     "cups|CIS 2.2.9|Print server; rarely needed on headless servers"
     "dhcpd|CIS 2.2.12|DHCP server; disable if not hosting DHCP"
-    "slapd|CIS 2.2.6|LDAP server; disable if not hosting directory"
-    "nfs|CIS 2.2.7|NFS; disable if not sharing filesystems"
-    "rpcbind|CIS 2.2.7|RPC portmapper; needed only if NFS/NIS in use"
+    "slapd|CIS 2.2.13|LDAP server; disable if not hosting directory"
+    "nfs|CIS 2.2.8|NFS; disable if not sharing filesystems"
+    "rpcbind|CIS 2.2.21|RPC portmapper; needed only if NFS/NIS in use"
     "vsftpd|CIS 2.2.8|FTP server; use SFTP (built into sshd) instead"
     "named|CIS 2.2.11|DNS server; disable if not a DNS resolver"
 )
@@ -442,12 +447,19 @@ for entry in "${CRITICAL_FILES[@]}"; do
         continue
     fi
 
-    # stat -c "%a" returns octal permissions (e.g. 644, 000, 755)
+    # stat -c "%a" returns octal permissions without leading zeros (e.g. 644, 0, 755).
+    # Normalise to 3-digit octal for display, then compare numerically in octal.
+    # BUG-FIX: the original used -le on octal strings treated as decimal integers,
+    # which caused false FAILs (e.g. 700 > 644 decimally, but 700 is *more* restrictive).
+    # CIS mandates exact permissions, so we require an exact match.
     actual=$(stat -c "%a" "$filepath")
-    if [[ "$actual" -le "$expected" ]]; then
-        check_result "$filepath permissions ($ref) [mode: $actual]" "pass"
+    # stat returns octal without leading zeros (e.g. 0 instead of 000).
+    # Pad to 3 digits so "0" == "000" and "4" == "004" for a correct string compare.
+    actual_norm=$(printf '%03d' "$actual")
+    if [[ "$actual_norm" == "$expected" ]]; then
+        check_result "$filepath permissions ($ref) [mode: $actual_norm]" "pass"
     else
-        check_result "$filepath permissions too permissive ($ref) [expected: $expected, got: $actual]" "fail" \
+        check_result "$filepath permissions ($ref) [expected: $expected, got: $actual_norm]" "fail" \
             "Run: chmod $expected $filepath"
     fi
 done
@@ -517,7 +529,10 @@ fi
 
 # CIS 6.2 ▸ Check for accounts with empty passwords
 echo -e "\n  ${YELLOW}Checking for accounts with empty passwords ...${RESET}" | tee -a "$REPORT_FILE"
-EMPTY_PASS=$(awk -F: '($2 == "" || $2 == "!") {print $1}' /etc/shadow 2>/dev/null)
+# BUG-FIX: '!' and '!!' are locked-account markers — not empty passwords.
+# Flagging them as a problem produces false positives on every normal locked
+# system account (e.g. bin, daemon, nobody).  Only a truly empty field is a risk.
+EMPTY_PASS=$(awk -F: '($2 == "") {print $1}' /etc/shadow 2>/dev/null)
 if [[ -z "$EMPTY_PASS" ]]; then
     check_result "No accounts with empty password fields (CIS 6.2.1)" "pass"
 else
